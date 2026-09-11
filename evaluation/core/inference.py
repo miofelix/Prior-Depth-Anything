@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import random
+from pathlib import Path
 from typing import Dict, List, Sequence
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from evaluation.core.io import normalize_prediction, read_raw_depth, read_rgb
+from evaluation.core.io import (
+    normalize_prediction,
+    read_raw_depth,
+    read_rgb,
+)
 from evaluation.core.output import RunLayout, save_prediction
 from evaluation.core.types import EvaluationSample, LoadedSample, RunConfig
-from evaluation.core.visualization import save_visualization
+from evaluation.core.visualization import (
+    save_kitti_pointcloud_visualization,
+    save_kitti_prediction_visualization,
+    save_visualization,
+)
 from evaluation.datasets.base import DatasetCollection
 
 try:
@@ -91,6 +100,13 @@ def run_inference(
         torch.cuda.manual_seed_all(config.seed)
     device = select_device(config.device)
     model = load_model(config, device)
+    if collection.name == "kitti" and config.save_visualizations:
+        for sample in collection.samples:
+            if not (sample.metadata.get("intrinsics_path") or config.intrinsics_path):
+                raise ValueError(
+                    "KITTI visualization requires an intrinsics path in every manifest row "
+                    "or --intrinsics-path"
+                )
     loader = DataLoader(
         InferenceInputDataset(collection.samples),
         batch_size=config.batch_size,
@@ -103,15 +119,10 @@ def run_inference(
     for batch in tqdm(loader, desc=f"{collection.name} inference"):
         for item in batch:
             sample = item.sample
-            if item.raw_depth.shape != item.rgb.shape[:2]:
+            if sample.expected_shape is not None and item.rgb.shape[:2] != sample.expected_shape:
                 raise ValueError(
-                    f"RGB/raw-depth shape mismatch for {sample.sample_id}: "
-                    f"rgb={item.rgb.shape[:2]}, raw={item.raw_depth.shape}"
-                )
-            if sample.expected_shape is not None and item.raw_depth.shape != sample.expected_shape:
-                raise ValueError(
-                    f"Unexpected input shape for {sample.sample_id}: "
-                    f"got {item.raw_depth.shape}, expected {sample.expected_shape}"
+                    f"Unexpected RGB shape for {sample.sample_id}: "
+                    f"got {item.rgb.shape[:2]}, expected {sample.expected_shape}"
                 )
             prediction = model.infer_one_sample(
                 image=item.rgb,
@@ -123,7 +134,10 @@ def run_inference(
                 visualize=False,
                 down_fill_mode=config.down_fill_mode,
             )
-            prediction = normalize_prediction(prediction, item.raw_depth.shape)
+            # The native model returns a Tensor on its inference device.
+            if isinstance(prediction, torch.Tensor):
+                prediction = prediction.detach().float().cpu().numpy()
+            prediction = normalize_prediction(prediction, item.rgb.shape[:2])
             save_prediction(layout.prediction_path(sample), prediction)
             if config.save_visualizations:
                 save_visualization(
@@ -135,11 +149,41 @@ def run_inference(
                     config.visualization_min_depth,
                     config.visualization_max_depth,
                 )
+                if collection.name == "kitti":
+                    save_kitti_prediction_visualization(
+                        layout.kitti_prediction_visualization_path(sample), prediction,
+                        config.visualization_min_depth, config.visualization_max_depth,
+                    )
+                    intrinsics_value = sample.metadata.get("intrinsics_path")
+                    intrinsics_path = (
+                        Path(intrinsics_value) if intrinsics_value else config.intrinsics_path
+                    )
+                    assert intrinsics_path is not None
+                    save_kitti_pointcloud_visualization(
+                        layout.kitti_pointcloud_visualization_path(sample), item.rgb, prediction,
+                        intrinsics_path, config.pointcloud_rot_x_deg, config.pointcloud_rot_y_deg,
+                        config.pointcloud_knn_k, config.pointcloud_knn_std_ratio,
+                        config.disable_pointcloud_knn_filter,
+                    )
             written += 1
     return {
         "num_predictions": written,
         "device": str(device),
         "seed": config.seed,
+        "preprocessing": {
+            "rgb": "uint8 HWC RGB; native SparseSampler owns spatial adaptation",
+            "prompt": "float32 metric depth at its original resolution",
+            "low_resolution_prompt": "native SparseSampler downscale path with pattern=None",
+            "gt_used_for_inference": False,
+        },
+        "prediction_postprocessing": {
+            "normalization": "normalize_prediction",
+            "invalid_values": "nonfinite or nonpositive -> NaN",
+            "resize": "linear prediction with nearest validity mask to original RGB grid",
+            "depth_unit": "meter",
+            "scale_shift_fit": False,
+            "clipping": False,
+        },
         "model_class": "prior_depth_anything.PriorDepthAnything",
         "gt_used_for_inference": False,
     }

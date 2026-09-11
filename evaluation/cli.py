@@ -12,6 +12,7 @@ from evaluation.core.types import RunConfig
 from evaluation.datasets import load_clearpose, load_dreds, load_hammer, load_ibims
 from evaluation.datasets.dreds import DREDS_VARIANTS
 from evaluation.datasets.ibims import IBIMS_LEVELS
+from evaluation.datasets.kitti import KITTI_DEFAULT_RAW_MAX_DEPTH, load_kitti
 from evaluation.datasets.transpose import load_transpose
 
 DEFAULT_OUTPUT_ROOT = Path("outputs/evaluation")
@@ -32,6 +33,8 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--prior-cover", action="store_true")
     parser.add_argument("--down-fill-mode", choices=("linear", "global", "knn"), default="linear")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--evaluation-seed", type=int, default=0,
+                        help="Seed for the official iBims evaluator, independent of model seed")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
@@ -78,6 +81,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_common_arguments(transpose)
     transpose.add_argument("--manifest", type=Path, required=True)
+    kitti = subparsers.add_parser(
+        "kitti",
+        help="Run KITTI Depth Completion val_selection_cropped evaluation",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_common_arguments(kitti)
+    kitti.add_argument("--manifest", type=Path, required=True)
+    kitti.add_argument(
+        "--raw-max-depth",
+        type=float,
+        default=KITTI_DEFAULT_RAW_MAX_DEPTH,
+        help="Maximum raw Velodyne depth passed to the model; GT remains unbounded",
+    )
+    kitti.add_argument(
+        "--intrinsics-path",
+        type=Path,
+        default=None,
+        help="Fallback 3x3 intrinsics file for KITTI point-cloud visualization",
+    )
+    kitti.add_argument("--pointcloud-rot-x-deg", type=float, default=25.0)
+    kitti.add_argument("--pointcloud-rot-y-deg", type=float, default=15.0)
+    kitti.add_argument("--pointcloud-knn-k", type=int, default=16)
+    kitti.add_argument("--pointcloud-knn-std-ratio", type=float, default=2.0)
+    kitti.add_argument("--disable-pointcloud-knn-filter", action="store_true")
+    kitti.set_defaults(visualization_max_depth=KITTI_DEFAULT_RAW_MAX_DEPTH)
     return parser
 
 
@@ -119,10 +147,21 @@ def build_collection(args: argparse.Namespace, parser: argparse.ArgumentParser):
         ), args.ibims_root
     if args.dataset == "transpose":
         return load_transpose(args.manifest, args.max_samples), None
+    if args.dataset == "kitti":
+        return (
+            load_kitti(
+                args.manifest,
+                max_samples=args.max_samples,
+                raw_max_depth=args.raw_max_depth,
+            ),
+            None,
+        )
     parser.error(f"unsupported dataset: {args.dataset}")
 
 
 def build_config(args: argparse.Namespace, run_dir: Path) -> RunConfig:
+    if args.visualization_max_depth <= args.visualization_min_depth:
+        raise ValueError("--visualization-max-depth must be greater than --visualization-min-depth")
     return RunConfig(
         dataset=args.dataset,
         stage=args.stage,
@@ -139,6 +178,7 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> RunConfig:
         prior_cover=args.prior_cover,
         down_fill_mode=args.down_fill_mode,
         seed=args.seed,
+        evaluation_seed=args.evaluation_seed,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         save_visualizations=args.save_visualizations,
@@ -146,12 +186,20 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> RunConfig:
         max_samples=args.max_samples,
         visualization_min_depth=args.visualization_min_depth,
         visualization_max_depth=args.visualization_max_depth,
+        intrinsics_path=getattr(args, "intrinsics_path", None),
+        pointcloud_rot_x_deg=getattr(args, "pointcloud_rot_x_deg", 25.0),
+        pointcloud_rot_y_deg=getattr(args, "pointcloud_rot_y_deg", 15.0),
+        pointcloud_knn_k=getattr(args, "pointcloud_knn_k", 16),
+        pointcloud_knn_std_ratio=getattr(args, "pointcloud_knn_std_ratio", 2.0),
+        disable_pointcloud_knn_filter=getattr(args, "disable_pointcloud_knn_filter", False),
     )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if not 0 <= args.evaluation_seed < 2**32:
+        parser.error("--evaluation-seed must be in [0, 2**32)")
     run_dir = resolve_run_dir(args, parser)
     collection, ibims_root = build_collection(args, parser)
     layout = run_pipeline(collection, build_config(args, run_dir), ibims_root=ibims_root)

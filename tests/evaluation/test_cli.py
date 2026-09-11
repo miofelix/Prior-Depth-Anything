@@ -26,3 +26,12 @@ def test_explicit_run_dir_is_preserved():
     parser = build_parser()
     args = parser.parse_args(["ibims", "--stage", "evaluate", "--run-dir", "outputs/run"])
     assert resolve_run_dir(args, parser) == Path("outputs/run")
+
+
+def test_run_config_retains_existing_positional_device_slot(tmp_path):
+    from evaluation.core.types import RunConfig
+
+    config = RunConfig("hammer", "infer", tmp_path, "model.pt", "mde.pt", "cuda")
+    assert config.mde_path == "mde.pt"
+    assert config.device == "cuda"
+    assert config.evaluation_seed == 0

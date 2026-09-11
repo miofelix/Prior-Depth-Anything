@@ -53,6 +53,7 @@ class RunConfig:
     pointcloud_knn_k: int = 16
     pointcloud_knn_std_ratio: float = 2.0
     disable_pointcloud_knn_filter: bool = False
+    evaluation_seed: int = 0
 
 
 @dataclass(frozen=True)
