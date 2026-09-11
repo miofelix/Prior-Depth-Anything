@@ -1,6 +1,9 @@
 import torch
 import re
-import torch_cluster
+try:
+    import torch_cluster
+except ImportError:  # CUDA server dependency; keep package imports usable on Mac.
+    torch_cluster = None
 import warnings
 import time
 from typing import Dict, Tuple, Optional
@@ -344,6 +347,11 @@ class DepthCompletion(torch.nn.Module):
                 - k_pred_targets: Disparities of the K nearest neighbors from the predicted data.
         """
         
+        if torch_cluster is None:
+            raise RuntimeError(
+                "torch-cluster is required for Prior-Depth-Anything inference; "
+                "install the uv cuda extra on a Linux CUDA server"
+            )
         # Coordinates are processed to ensure compatibility with the KNN function.
         batch_sparse = torch.nonzero(sparse_masks, as_tuple=False)[..., [0, 2, 1]].float() # [N, 3] (b, x, y)
         batch_complete = torch.nonzero(complete_masks, as_tuple=False)[..., [0, 2, 1]].float() # [M, 3] (b, x, y)

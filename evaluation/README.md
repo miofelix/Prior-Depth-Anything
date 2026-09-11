@@ -1,232 +1,135 @@
-# Prior-Depth-Anything 的 HAMMER / ClearPose / DREDS / TRansPose 评估
+# Prior-Depth-Anything Evaluation
 
-该目录是当前项目的轻量评估导出入口，结构与 `eval_pipeline_cdm` 对齐，但模型加载固定保留本仓库的 `prior_depth_anything.PriorDepthAnything`。旧的单入口 `run_eval.sh` 已拆分为数据集专属 wrapper。
+This directory follows the reference evaluation structure: one CLI, dataset
+adapters, shared inference/I/O/metrics, output management, and evaluator
+backends. The model adapter calls the native
+`prior_depth_anything.PriorDepthAnything.infer_one_sample` interface and stores
+metric depth in meters.
 
-## 文件结构
+The former `evaluation/dataset.py`, `infer.py`, `eval.py`, `evaluation/utils/`,
+and `evaluation_ibims/` entry points were removed. Existing runs must be
+recreated with the unified CLI because the run layout and prediction names are
+versioned and there is no compatibility forwarding layer.
 
-```text
-evaluation/
-├── dataset.py
-├── infer.py
-├── eval.py
-├── run_hammer.sh
-├── run_clearpose.sh
-├── run_dreds.sh
-├── run_transpose.sh
-├── requirements.txt
-└── utils/
-    ├── img_utils.py
-    └── metric.py
-```
-
-链路边界：
-
-1. `infer.py` 读取 JSONL 和 raw depth，调用 `PriorDepthAnything`，逐样本写出 `predictions/*.npy`。
-2. `eval.py` 从 `predictions/` 读取预测并计算指标；为了兼容旧结果，也会 fallback 到输出根目录查找 `.npy`。
-3. `run_*.sh` 负责选择数据集、组织输出目录、顺序调用推理和评估，并可选清理逐样本 `.npy`。
-
-## 数据格式
-
-HAMMER JSONL 每行是一个样本，字段为：
-
-```text
-rgb
-d435_depth / l515_depth / tof_depth
-depth
-depth-range
-```
-
-ClearPose JSONL 每行是一个序列 manifest，字段为：
-
-```text
-rgb
-rgb-suffix
-raw_depth-suffix
-depth-suffix
-depth-range
-```
-
-DREDS 使用与 CDM 模板一致的 sequence JSONL，字段同 ClearPose。DREDS 的 raw / GT depth 是 EXR 浮点深度，单位已经是 meter，因此 `DREDSDataset.depth_scale=1.0`；HAMMER 和 ClearPose 使用 `depth_scale=1000.0`。
-
-TRansPose L515 JSONL 每行是一个样本，字段为：
-
-```text
-rgb
-l515_depth
-depth
-seq_name 可选
-depth-range 可选
-```
-
-TRansPose 固定 `raw-type=l515`；`l515_depth` 与 `depth` 都按毫米 PNG 读取并除以 `1000.0`，默认有效深度范围是 `0.1-6.0m`。如果存在 `seq_name`，推理和评估都会使用同一个 `predictions/<seq_name>.npy`。
-
-样本命名约定：
-
-```text
-HAMMER:    scene#frame-stem.npy
-ClearPose: dir1#dir2#frame-stem.npy
-DREDS:     dir1#dir2#frame-stem.npy
-TRansPose: <seq_name>.npy，缺省时使用路径兜底名
-```
-
-## 运行方式
-
-先安装依赖：
+## Environment
 
 ```bash
-pip install -r evaluation/requirements.txt
+uv sync --extra evaluation --group dev
 ```
 
-默认 checkpoint：
+Run every command with `uv run`. The Mac setup is suitable for syntax, imports,
+dataset decoding, scoring, and CLI checks. Full inference requires a Linux CUDA
+server and the `torch-cluster` wheel selected by `uv sync --extra cuda`.
 
-```text
-ckpts/depth_anything_v2_vitl.pth
-ckpts/prior_depth_anything_vitb_1_1.pth
+## Commands
+
+All datasets share one entry point:
+
+```bash
+uv run --extra evaluation python -m evaluation <dataset> [options]
 ```
-
-也可以把 checkpoint 参数设为 `auto`、`none` 或 `null`，让 `PriorDepthAnything` 从 Hugging Face 下载权重。
 
 ### HAMMER
 
 ```bash
-DATASET_PATH=/path/to/HAMMER/test_filled_d435.jsonl \
-OUTPUT_DIR=/tmp/priorda_hammer_eval \
-BATCH_SIZE=1 \
-NUM_WORKERS=0 \
-bash evaluation/run_hammer.sh /path/to/prior_depth_anything_vitb_1_1.pth /path/to/depth_anything_v2_vitl.pth d435 vitl vitb 1.1 false
+uv run --extra evaluation python -m evaluation hammer \
+  --model-path ckpts/prior_depth_anything_vitb_1_1.pth \
+  --mde-path ckpts/depth_anything_v2_vitl.pth \
+  --manifest data/HAMMER/test.jsonl --camera d435
 ```
 
-参数：
-
-```text
-bash evaluation/run_hammer.sh [priorda_ckpt] [mde_ckpt] [camera_type=d435] [frozen_size=vitl] [conditioned_size=vitb] [version=1.1] [cleanup_npy=false]
-```
-
-`camera_type` 支持 `d435`、`l515`、`tof`。
+`--camera` accepts `d435`, `l515`, or `tof`. Raw and GT PNG values are divided
+by 1000 and filtered by each manifest row's `depth-range`.
 
 ### ClearPose
 
-ClearPose 固定按 `raw-type=d435`：
-
 ```bash
-DATASET_PATH=/path/to/clearpose/test.jsonl \
-OUTPUT_DIR=/tmp/priorda_clearpose_eval \
-bash evaluation/run_clearpose.sh /path/to/prior_depth_anything_vitb_1_1.pth /path/to/depth_anything_v2_vitl.pth vitl vitb 1.1 false
+uv run --extra evaluation python -m evaluation clearpose \
+  --model-path ckpts/prior_depth_anything_vitb_1_1.pth \
+  --mde-path ckpts/depth_anything_v2_vitl.pth \
+  --manifest data/clearpose/test.jsonl
 ```
 
-参数：
-
-```text
-bash evaluation/run_clearpose.sh [priorda_ckpt] [mde_ckpt] [frozen_size=vitl] [conditioned_size=vitb] [version=1.1] [cleanup_npy=false]
-```
+Sequence rows use `rgb`, `rgb-suffix`, `raw_depth-suffix`, `depth-suffix`, and
+`depth-range`. Frames are matched by their shared stem.
 
 ### DREDS
 
-DREDS route 支持 `catknown`、`catnovel`、`all`：
+```bash
+uv run --extra evaluation python -m evaluation dreds \
+  --model-path ckpts/prior_depth_anything_vitb_1_1.pth \
+  --mde-path ckpts/depth_anything_v2_vitl.pth \
+  --known-manifest data/DREDS/test_std_catknown.jsonl \
+  --novel-manifest data/DREDS/test_std_catnovel.jsonl
+```
+
+Use `--variants catknown` or `--variants catnovel` to select one subset. EXR
+raw and GT values are already meters. Prediction maps are nearest-resized to
+GT only for DREDS, matching the reference protocol.
+
+### iBims
 
 ```bash
-DREDS_KNOWN_JSONL=/path/to/DREDS/test_std_catknown.jsonl \
-DREDS_NOVEL_JSONL=/path/to/DREDS/test_std_catnovel.jsonl \
-OUTPUT_ROOT=/tmp/priorda_dreds_eval \
-SAVE_VIS=false \
-bash evaluation/run_dreds.sh /path/to/prior_depth_anything_vitb_1_1.pth /path/to/depth_anything_v2_vitl.pth all vitl vitb 1.1 false
+uv run --extra evaluation python -m evaluation ibims \
+  --model-path ckpts/prior_depth_anything_vitb_1_1.pth \
+  --mde-path ckpts/depth_anything_v2_vitl.pth \
+  --ibims-root data/ibims1 --levels easy medium hard extreme
 ```
 
-参数：
-
-```text
-bash evaluation/run_dreds.sh [priorda_ckpt] [mde_ckpt] [variant=all] [frozen_size=vitl] [conditioned_size=vitb] [version=1.1] [cleanup_npy=false]
-```
-
-说明：
-
-- `variant=catknown` 使用 `DREDS_KNOWN_JSONL`。
-- `variant=catnovel` 使用 `DREDS_NOVEL_JSONL`。
-- `variant=all` 会顺序运行 catknown 和 catnovel；此时请使用 `OUTPUT_ROOT`，不要使用单目录 `OUTPUT_DIR`。
-- `run_dreds.sh` 会在 Python 启动前设置 `OPENCV_IO_ENABLE_OPENEXR=1`。
-- DREDS 的 `raw-type=d435` 仅用于满足共享 CLI 参数，dataset loader 不按 raw type 分支。
+The root must contain `ibims1_core_mat/`,
+`evaluation_scripts/evaluate_ibims.py`, and the per-level JSONL manifests under
+`ibims1_synthetic_raw_depth/manifests/`. Predictions are staged as official MAT
+files before the evaluator is invoked through `uv run`.
 
 ### TRansPose
 
-TRansPose 固定按 `raw-type=l515`：
+TRansPose is the current-project adapter at `evaluation/datasets/transpose.py`.
+It uses L515 raw depth and GT PNG values divided by 1000, with a default valid
+range of 0.1–6.0 m.
 
 ```bash
-DATASET_PATH=/path/to/TRansPose/sequences/dc_testset.jsonl \
-INTRINSICS_PATH=/path/to/TRansPose/sequences/intrinsics.txt \
-OUTPUT_DIR=/tmp/priorda_transpose_eval \
-SAVE_VIS=false \
-bash evaluation/run_transpose.sh /path/to/prior_depth_anything_vitb_1_1.pth /path/to/depth_anything_v2_vitl.pth l515 vitl vitb 1.1 false
+uv run --extra evaluation python -m evaluation transpose \
+  --model-path ckpts/prior_depth_anything_vitb_1_1.pth \
+  --mde-path ckpts/depth_anything_v2_vitl.pth \
+  --manifest data/TRansPose/sequences/dc_testset.jsonl
 ```
 
-参数：
+## Common options
+
+- `--stage all|infer|evaluate` selects the pipeline stage.
+- `--model-path` and `--mde-path` accept local checkpoints; omit either to use the native Hugging Face loader.
+- `--run-dir` selects a run directory and is required for evaluate-only runs.
+- `--device auto|cuda|mps|cpu` selects the torch device. CUDA is required for real model inference.
+- `--frozen-model-size` and `--conditioned-model-size` select the native model backbones.
+- `--model-version`, `--coarse-only`, `--pattern`, `--double-global`, `--prior-cover`, and `--down-fill-mode` map directly to native inference options.
+- `--seed` records the random seed used by the sparse sampler; the default is `0`.
+- `--max-samples N` limits each subset independently for smoke testing.
+- `--save-visualizations` and `--no-save-visualizations` control previews.
+- `--cleanup-predictions` removes canonical NPY files only after evaluation succeeds.
+
+Convenience wrappers in `evaluation/scripts/` forward to the same `uv run`
+entry point.
+
+## Output layout
+
+When `--run-dir` is omitted, runs are written under
+`outputs/evaluation/<dataset>/<model_stem>_<YYYYMMDD_HHMMSS>/`:
 
 ```text
-bash evaluation/run_transpose.sh [priorda_ckpt] [mde_ckpt] [camera_type=l515] [frozen_size=vitl] [conditioned_size=vitb] [version=1.1] [cleanup_npy=false]
+run.json
+predictions/<subset>/<relative_sample_path>.npy
+visualizations/<subset>/<relative_sample_path>_vis.jpg
+metrics/per_sample.csv
+metrics/summary.csv
+metrics/summary.json
+official/<subset>/predictions/*.mat       # iBims
+official/<subset>/workspace/            # iBims
+official/<subset>/evaluator.log         # iBims
 ```
 
-说明：
-
-- `camera_type` 只支持 `l515`。
-- 默认 JSONL 为 `data/TRansPose/sequences/dc_testset.jsonl`。
-- 默认 intrinsics 为 `data/TRansPose/sequences/intrinsics.txt`。
-- 只有 `SAVE_VIS=true` 时，`infer.py` 才会强制校验 intrinsics 文件。
-- `SAVE_VIS=true` 会额外保存 3x2 网格：RGB、raw depth、prediction、GT depth、prediction point cloud、GT point cloud。
-
-## 常用环境变量
-
-```text
-PRIORDA_CKPT          Prior-Depth-Anything checkpoint
-MDE_CKPT              Depth Anything V2 checkpoint
-DATASET_PATH          HAMMER / ClearPose / TRansPose JSONL 路径
-DREDS_KNOWN_JSONL     DREDS catknown JSONL 路径
-DREDS_NOVEL_JSONL     DREDS catnovel JSONL 路径
-OUTPUT_DIR            单数据集或单 DREDS variant 输出目录
-OUTPUT_ROOT           DREDS all 模式输出根目录
-BATCH_SIZE            推理 batch size，当前模型仍逐样本调用
-NUM_WORKERS           推理 DataLoader worker 数
-MAX_SAMPLES           最大样本数，0 表示全部
-DEVICE                Torch device，例如 cuda:0
-PATTERN               Prior-Depth-Anything sparse sampling pattern
-SAVE_VIS              true 时保存可视化，HAMMER/ClearPose 默认 true，DREDS/TRansPose 默认 false
-INTRINSICS_PATH       TRansPose 点云可视化 intrinsics 文件路径
-PC_ROT_X_DEG          点云视角 X 轴旋转角度
-PC_ROT_Y_DEG          点云视角 Y 轴旋转角度
-PC_KNN_K              prediction point cloud KNN 过滤邻居数
-PC_KNN_STD_RATIO      prediction point cloud KNN 过滤阈值
-DISABLE_PC_KNN_FILTER true 时关闭 prediction point cloud KNN 过滤
-COARSE_ONLY           true 时只使用 coarse stage
-DOUBLE_GLOBAL         true 时启用 double-global conditioning
-PRIOR_COVER           sparse pattern 下保留所有 prior 像素
-DOWN_FILL_MODE        downscale_* pattern 的填充方式：linear/global/knn
-CLAMP_TO_DEPTH_RANGE  true 时保存前裁剪到 dataset depth-range
-PYTHON_BIN            Python 可执行文件，默认 python，找不到时回退 python3
-```
-
-## 输出结构
-
-未设置 `OUTPUT_DIR` 时，HAMMER / ClearPose / TRansPose 默认写到 PriorDepthAnything checkpoint 同级目录；DREDS `all` 默认在 `OUTPUT_ROOT` 下为两个 variant 分别创建目录。
-
-```text
-<output_dir>/
-├── args.json
-├── eval_args.json
-├── predictions/
-│   └── *.npy
-├── visualizations/
-│   ├── *_promptda_vis.jpg
-│   └── *_grid_vis.jpg
-├── all_metrics_<timestamp>_False.csv
-└── mean_metrics_<timestamp>_False.json
-```
-
-如果 `cleanup_npy=true`，评估结束后会删除 `predictions/*.npy`，指标文件和参数 JSON 会保留。
-
-## 关键约定
-
-- 模型类、checkpoint 格式、Depth Anything V2 transform 和 `PriorDepthAnything.infer_one_sample()` 不随 CDM 模板改动。
-- `infer.py` 默认把 `.npy` 写入 `predictions/`，可视化写入 `visualizations/`；`--prediction-dir` 和 `--visualization-dir` 可覆盖默认路径。
-- `eval.py` 对 HAMMER / ClearPose 要求 prediction 与 GT shape 一致；DREDS 如果 shape 不一致，会用 nearest resize 将 prediction 对齐到 GT。
-- TRansPose 推理和评估都通过 `sample_name_for_sample()` 查找同一个 `<seq_name>.npy`，避免按 RGB 路径推导名称导致不一致。
-- TRansPose 点云可视化只在 `SAVE_VIS=true` 时要求 intrinsics；其他数据集仍使用原有 `_promptda_vis.jpg` 可视化。
-- 当前项目官方推理接口以单图为主，即使 `BATCH_SIZE > 1`，`infer.py` 也会逐样本循环推理。
-- completion 阶段依赖 `torch_cluster` KNN，完整推理建议使用 CUDA 环境。
+Predictions are float32 metric depth; invalid values are stored as `NaN`.
+HAMMER, ClearPose, DREDS, and TRansPose report MAE, RMSE, absolute relative
+error, and delta accuracy at 1.05, 1.10, and 1.25. Metrics exclude non-finite,
+non-positive predictions and invalid GT pixels, then average per-sample scores
+within each subset and overall. iBims retains the names emitted by its official
+evaluator.

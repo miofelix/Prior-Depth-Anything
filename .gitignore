@@ -23,7 +23,7 @@ dist/
 .ipynb_checkpoints/
 
 eval/
-evaluation/output/
+outputs/
 prior_depth_anything.egg-info/
 output/
 

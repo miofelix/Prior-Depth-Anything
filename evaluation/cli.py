@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import argparse
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Optional, Sequence
+
+from evaluation import __version__
+from evaluation.core.output import model_stem
+from evaluation.core.pipeline import run_pipeline
+from evaluation.core.types import RunConfig
+from evaluation.datasets import load_clearpose, load_dreds, load_hammer, load_ibims
+from evaluation.datasets.dreds import DREDS_VARIANTS
+from evaluation.datasets.ibims import IBIMS_LEVELS
+from evaluation.datasets.transpose import load_transpose
+
+DEFAULT_OUTPUT_ROOT = Path("outputs/evaluation")
+
+
+def add_common_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model-path", required=False, help="Prior-Depth-Anything checkpoint")
+    parser.add_argument("--mde-path", default=None, help="Depth Anything V2 checkpoint")
+    parser.add_argument("--stage", choices=("all", "infer", "evaluate"), default="all")
+    parser.add_argument("--run-dir", type=Path, default=None)
+    parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
+    parser.add_argument("--model-version", choices=("1.0", "1.1"), default="1.1")
+    parser.add_argument("--frozen-model-size", choices=("vits", "vitb", "vitl"), default="vitl")
+    parser.add_argument("--conditioned-model-size", choices=("vits", "vitb"), default="vitb")
+    parser.add_argument("--coarse-only", action="store_true")
+    parser.add_argument("--pattern", default=None)
+    parser.add_argument("--double-global", action="store_true")
+    parser.add_argument("--prior-cover", action="store_true")
+    parser.add_argument("--down-fill-mode", choices=("linear", "global", "knn"), default="linear")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--save-visualizations", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument("--cleanup-predictions", action="store_true")
+    parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--visualization-min-depth", type=float, default=0.1)
+    parser.add_argument("--visualization-max-depth", type=float, default=5.0)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m evaluation",
+        description="Prior-Depth-Anything dataset evaluation pipeline",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--version", action="version", version=__version__)
+    subparsers = parser.add_subparsers(dest="dataset", required=True)
+    hammer = subparsers.add_parser("hammer", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    add_common_arguments(hammer)
+    hammer.add_argument("--manifest", type=Path, required=True)
+    hammer.add_argument("--camera", choices=("d435", "l515", "tof"), default="d435")
+    clearpose = subparsers.add_parser(
+        "clearpose", formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    add_common_arguments(clearpose)
+    clearpose.add_argument("--manifest", type=Path, required=True)
+    dreds = subparsers.add_parser("dreds", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    add_common_arguments(dreds)
+    dreds.add_argument("--known-manifest", type=Path)
+    dreds.add_argument("--novel-manifest", type=Path)
+    dreds.add_argument(
+        "--variants", nargs="+", choices=DREDS_VARIANTS, default=list(DREDS_VARIANTS)
+    )
+    ibims = subparsers.add_parser("ibims", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    add_common_arguments(ibims)
+    ibims.add_argument("--ibims-root", type=Path, default=Path("data/ibims1"))
+    ibims.add_argument("--levels", nargs="+", choices=IBIMS_LEVELS, default=list(IBIMS_LEVELS))
+    ibims.add_argument("--depth-scale", type=float, default=None)
+    ibims.add_argument("--max-depth", type=float, default=None)
+    transpose = subparsers.add_parser(
+        "transpose", formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    add_common_arguments(transpose)
+    transpose.add_argument("--manifest", type=Path, required=True)
+    return parser
+
+
+def resolve_run_dir(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Path:
+    if args.run_dir is not None:
+        return args.run_dir
+    if args.stage == "evaluate":
+        parser.error("--run-dir is required when --stage=evaluate")
+    model_label = model_stem(args.model_path) if args.model_path else "hf_auto"
+    return (
+        DEFAULT_OUTPUT_ROOT
+        / args.dataset
+        / f"{model_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+
+
+def build_collection(args: argparse.Namespace, parser: argparse.ArgumentParser):
+    if args.dataset == "hammer":
+        return load_hammer(args.manifest, args.camera, args.max_samples), None
+    if args.dataset == "clearpose":
+        return load_clearpose(args.manifest, args.max_samples), None
+    if args.dataset == "dreds":
+        manifests: Dict[str, Path] = {}
+        if args.known_manifest is not None:
+            manifests["catknown"] = args.known_manifest
+        if args.novel_manifest is not None:
+            manifests["catnovel"] = args.novel_manifest
+        missing = [variant for variant in args.variants if variant not in manifests]
+        if missing:
+            parser.error("missing DREDS manifest(s): " + ", ".join(missing))
+        return load_dreds(manifests, args.variants, args.max_samples), None
+    if args.dataset == "ibims":
+        return load_ibims(
+            args.ibims_root,
+            args.levels,
+            args.max_samples,
+            depth_scale_override=args.depth_scale,
+            max_depth_override=args.max_depth,
+        ), args.ibims_root
+    if args.dataset == "transpose":
+        return load_transpose(args.manifest, args.max_samples), None
+    parser.error(f"unsupported dataset: {args.dataset}")
+
+
+def build_config(args: argparse.Namespace, run_dir: Path) -> RunConfig:
+    return RunConfig(
+        dataset=args.dataset,
+        stage=args.stage,
+        run_dir=run_dir,
+        model_path=args.model_path,
+        mde_path=args.mde_path,
+        device=args.device,
+        model_version=args.model_version,
+        frozen_model_size=args.frozen_model_size,
+        conditioned_model_size=args.conditioned_model_size,
+        coarse_only=args.coarse_only,
+        pattern=args.pattern,
+        double_global=args.double_global,
+        prior_cover=args.prior_cover,
+        down_fill_mode=args.down_fill_mode,
+        seed=args.seed,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        save_visualizations=args.save_visualizations,
+        cleanup_predictions=args.cleanup_predictions,
+        max_samples=args.max_samples,
+        visualization_min_depth=args.visualization_min_depth,
+        visualization_max_depth=args.visualization_max_depth,
+    )
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    run_dir = resolve_run_dir(args, parser)
+    collection, ibims_root = build_collection(args, parser)
+    layout = run_pipeline(collection, build_config(args, run_dir), ibims_root=ibims_root)
+    print(f"Evaluation run completed: {layout.root}")
+
+
+if __name__ == "__main__":
+    main()

@@ -5,7 +5,10 @@ import re
 import warnings
 
 import torch
-import torch_cluster
+try:
+    import torch_cluster
+except ImportError:  # CUDA server dependency; keep package imports usable on Mac.
+    torch_cluster = None
 import torch.nn.functional as F
 
 from typing import Dict, Union, Optional
@@ -370,6 +373,11 @@ class SparseSampler:
         
     
     def linear_interpolate_depths(self, sparse_depths, sparse_masks, complete_masks):
+        if torch_cluster is None:
+            raise RuntimeError(
+                "torch-cluster is required for sparse interpolation; "
+                "install the uv cuda extra on a Linux CUDA server"
+            )
         known_points = torch.nonzero(sparse_masks, as_tuple=False)[..., [0, 2, 1]].float() # [N, 3] (b, x, y)
         complete_depths = torch.nonzero(complete_masks, as_tuple=False)[..., [0, 2, 1]].float() # [M, 3] (b, x, y)
         

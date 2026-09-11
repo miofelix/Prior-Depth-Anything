@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prior-depth-anything"
+version = "1.0.0"
+description = "Native Prior-Depth-Anything inference and dataset evaluation"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "torch==2.2.2",
+    "torchvision==0.17.2",
+    "numpy==1.25.2",
+    "huggingface-hub==0.26.5",
+    "einops==0.8.1",
+    "pillow==11.0.0",
+    "opencv-python==4.10.0.84",
+    "safetensors==0.4.5",
+    "matplotlib==3.9.3",
+    "tqdm==4.67.1",
+    "loguru==0.7.3",
+]
+
+[project.optional-dependencies]
+evaluation = [
+    "scipy>=1.11,<1.16",
+    "scikit-image>=0.22,<0.26",
+    "scikit-learn>=1.4,<1.8",
+]
+cuda = [
+    "torch-cluster==1.6.3+pt22cu121; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[project.scripts]
+priorda = "prior_depth_anything.cli:create_and_execute"
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "ruff>=0.12"]
+
+[tool.uv.sources]
+torch-cluster = { url = "https://data.pyg.org/whl/torch-2.2.0%2Bcu121/torch_cluster-1.6.3%2Bpt22cu121-cp311-cp311-linux_x86_64.whl" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["prior_depth_anything*", "evaluation*", "vggt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

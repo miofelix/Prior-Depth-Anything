@@ -22,7 +22,7 @@ This work presents Prior Depth Anything, a framework that combines incomplete bu
 
 ## News
 - **2025-08-30:** We release our newly trained model [prior_depth_anything_1_1.pth](https://huggingface.co/Rain729/Prior-Depth-Anything/resolve/main/prior_depth_anything_vitb_1_1.pth) which replaces `error map` with `sparse mask` as the condition. `priorda-v1.1` shows better performance on dense patterns without any modification of network structures. Our additional evaluation results are shown [below](#evaluation-results). We also fixed several bugs mentioned in #issues.
-- **2025-05-28:** We provide the code to measure inference latency. You can do it just by `python latency.py`
+- **2025-05-28:** We provide the code to measure inference latency. You can do it with `uv run python latency.py`.
 - **2025-05-21:** We provide one more way to input your own geometric prior (To minimize code changes, we use "geometric" to represent the geometric prior).
 - **2025-05-15:** We released [Paper](https://arxiv.org/pdf/2505.10565), [Project Page](https://prior-depth-anything.github.io/), [Code](https://github.com/SpatialVision/Prior-Depth-Anything) and [Models](https://huggingface.co/Rain729/Prior-Depth-Anything)
 
@@ -34,28 +34,21 @@ We provide two model [**checkpoints**](https://huggingface.co/Rain729/Prior-Dept
 
 ### Prepraration
 
-First, clone this repository and create environment with `python=3.9`.
+First, clone this repository and create the pinned `uv` environment.
 ```bash
 git clone https://github.com/SpatialVision/Prior-Depth-Anything
 cd Prior-Depth-Anything
-
-conda create -n priorda python=3.9
-conda activate priorda
+uv sync --extra evaluation --group dev
 ```
-Then, install the dependencies with the following command. If you encounter the issue that the installed `torch_cluster` is not for CUDA, please install `torch_cluster==1.6.3 -f https://pytorch-geometric.com/whl/torch-2.2.2+cu121.html` instead to download the gpu version (refer to [this issue](https://github.com/SpatialVision/Prior-Depth-Anything/issues/2)).
-```bash
-pip install -r requirements.txt
-```
-or you can install `Prior-Depth-Anything` as a package.
-```bash
-pip install -e .
-```
+All Python commands in this repository are run with `uv run`. CUDA servers need the
+Linux `torch-cluster` wheel selected by `uv sync --extra evaluation --extra cuda --group dev`; the Mac environment is
+used only for structural and CPU checks.
 
 ### Quick start:
-To run with CLI, you can begin by following command (Installing `Prior-Depth-Anything` as a package is required.). On the initial execution, the [model weights](#Pretrained-Models) will be automatically downloaded from the Hugging Face Model Hub.
+To run with the CLI, use the following command after `uv sync`. On the initial execution, the [model weights](#Pretrained-Models) will be automatically downloaded from the Hugging Face Model Hub.
 ```bash
 # We sample on Ground-Truth depth map as prior.
-priorda test --image_path assets/sample-1/rgb.jpg --prior_path assets/sample-1/gt_depth.png --pattern 1000 --visualize 1 
+uv run priorda test --image_path assets/sample-1/rgb.jpg --prior_path assets/sample-1/gt_depth.png --pattern 1000 --visualize 1
 ```
 
 Alternatively, you can use our model with:
@@ -207,3 +200,18 @@ If you find this project useful, please consider citing:
       url={https://arxiv.org/abs/2505.10565}, 
 }
 ```
+
+## Evaluation
+
+The evaluation system follows the reference project's `evaluation/` layout: one CLI, dataset adapters, shared inference/I/O/metrics, official iBims handling, and versioned run output. It evaluates HAMMER, ClearPose, DREDS, iBims, and the current project's TRansPose adapter.
+
+```bash
+uv sync --extra evaluation --group dev
+uv run python -m evaluation hammer --model-path ckpts/prior_depth_anything_vitb_1_1.pth --mde-path ckpts/depth_anything_v2_vitl.pth --manifest data/HAMMER/test.jsonl --camera d435
+uv run python -m evaluation clearpose --model-path ckpts/prior_depth_anything_vitb_1_1.pth --mde-path ckpts/depth_anything_v2_vitl.pth --manifest data/clearpose/test.jsonl
+uv run python -m evaluation dreds --model-path ckpts/prior_depth_anything_vitb_1_1.pth --mde-path ckpts/depth_anything_v2_vitl.pth --known-manifest data/DREDS/test_std_catknown.jsonl --novel-manifest data/DREDS/test_std_catnovel.jsonl
+uv run python -m evaluation ibims --model-path ckpts/prior_depth_anything_vitb_1_1.pth --mde-path ckpts/depth_anything_v2_vitl.pth --ibims-root data/ibims1
+uv run python -m evaluation transpose --model-path ckpts/prior_depth_anything_vitb_1_1.pth --mde-path ckpts/depth_anything_v2_vitl.pth --manifest data/TRansPose/sequences/dc_testset.jsonl
+```
+
+Use `--stage infer` and `--stage evaluate` to split a run. Run `uv run pytest tests/evaluation` for CPU smoke checks and `uv run python -m evaluation --help` for CLI validation; real inference requires a server with CUDA and the `torch-cluster` CUDA wheel. The Mac checks cover syntax, imports, dataset decoding, output layout, metric formulas, CLI parsing, and fixed prediction/GT scoring. Server validation still needs checkpoint loading, CUDA KNN completion, full dataset runs, iBims official scripts, and benchmark result review.
