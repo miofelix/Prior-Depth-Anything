@@ -396,6 +396,11 @@ class DepthCompletion(torch.nn.Module):
             The completed disparities, interpolated from the nearest neighbors.
         """
         
+        # 全有效深度没有待插值像素；避免将空 query 交给 KNN/CUDA 求解器。
+        # 结果与下方已知像素赋值完全一致，粗阶段网络和细阶段网络仍照常执行。
+        if not bool(complete_masks.any()):
+            return sparse_disparities.clone()
+
         # Use `knn_aligns` to find the K nearest neighbors and calculate distances.
         bottomk_dists, k_sparse_targets, k_pred_targets = self.knn_aligns(
             sparse_disparities=sparse_disparities,

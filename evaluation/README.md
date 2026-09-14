@@ -193,3 +193,9 @@ native output tensors from the model device to CPU float32 before NumPy export,
 then restores the original RGB grid, matching native model output resolution
 and preserving evaluation against RGB-aligned GT even with a low-resolution prior. The sampler and tensor-output contract
 are covered by a CPU regression test without loading checkpoint weights.
+
+## Native forward performance benchmark
+
+Independent parameter counting and CUDA forward FPS measurement are available through
+`python -m evaluation.benchmark`. See [the standalone benchmark guide](benchmark/README.md)
+for the fixed synthetic-input protocol, Mac checks, and the DGX Spark environment.
